@@ -64,6 +64,7 @@ class ScriptExecutor:
         except Exception as e:
             self.end()
             self.logger.error(e, extra={"script_path": self.script_path})
+        return None
 
 
 class ExecutorService:
@@ -72,6 +73,7 @@ class ExecutorService:
         self.__result_queue = multiprocessing.Queue()
         self.script_executor_class = ScriptExecutor
         self.executors: dict[Path, ScriptExecutor] = {}
+        self.processes = {}
     
     def execute_script(self, script_path: Path, input_data: dict[str, Any]):
         try:
@@ -80,9 +82,15 @@ class ExecutorService:
                 if script_path not in self.executors:
                     self.executors[script_path] = executor
         except Exception as e:
-            print(e)
+            pass
+    
+    def run_script(self, script_path: Path, input_data: dict[str, Any]):
+        self.processes[script_path] = multiprocessing.Process(target=self.execute_script, args=(script_path, input_data))
+        self.processes[script_path].start()
+
     
     def get_script_result(self, script_path: Path):
+        self.processes[script_path].join()
         path, results = self.__result_queue.get()
         while script_path != path:
             self.__result_queue.put((path, results))
@@ -94,7 +102,7 @@ def main():
     logging.basicConfig(format="%(levelname)s:%(name)s:%(process)d - %(message)s")
     executor_service = ExecutorService()
     t = time.time()
-    executor_service.execute_script(Path('./generate_smth.py'), "150")
+    executor_service.run_script(Path('./generate_smth.py'), "150")
     print(executor_service.get_script_result(Path('./generate_smth.py')))
 
 if __name__ == '__main__':
