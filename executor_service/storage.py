@@ -1,31 +1,24 @@
+import multiprocessing
 import threading
-from dataclasses import dataclass
-from typing import Generic, Type, TypeVar
 from uuid import UUID
 
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
-from .dto import ZMQFuture, ZMQMessage
+from .dto import ExecuteRequest, Stored, ExecuteFuture, ExecuteResult
 from .exceptions import (
     RepositoryException,
     UnprocessableResponseException,
 )
-
-TContent = TypeVar("TContent", bound=BaseModel)
-
-
-@dataclass(eq=False, slots=True)
-class Stored(Generic[TContent]):
-    message: ZMQMessage
-    future: ZMQFuture | None
-    response_type: Type[TContent] | None
-    destination: str
+import adaptix
 
 
-class ZMQMessageStorage:
-    def __init__(self) -> None:
+class MessageStorage:
+    def __init__(self, script_queue: multiprocessing.Queue) -> None:
+        self.__script_queue = script_queue
         self.__set_condition = threading.Condition()
-        self.__storage: dict[UUID, Stored] = {}
+        self.__storage: dict[UUID, Stored] = {}  # TODO: LRU Dict
+
+        self.__retort = adaptix.Retort()
 
     def remove_message_callback(self, message_uuid: UUID):
         with self.__set_condition:
@@ -33,27 +26,14 @@ class ZMQMessageStorage:
             self.__storage[message_uuid].future = None
             del self.__storage[message_uuid]
 
-    def get_fresh(self) -> tuple[str, ZMQMessage] | None:
-        with self.__set_condition:
-            self.__set_condition.wait()
-            for message in self.__storage.values():
-                if message.future is not None and (
-                    not message.future.running() and not message.future.done()
-                ):
-                    return message.destination, message.message
-
-        return None
-
     def create(
-        self,
-        message: ZMQMessage,
-        response_type: Type[TContent] | None,
-        destination: str,
-    ) -> ZMQFuture:
+            self,
+            message: ExecuteRequest,
+    ) -> ExecuteFuture:
         with self.__set_condition:
-            message_future = ZMQFuture()
+            message_future = ExecuteFuture()
 
-            def done_callback(f: ZMQFuture) -> None:
+            def done_callback(f: ExecuteFuture) -> None:
                 if message.id is None:
                     return
 
@@ -62,29 +42,25 @@ class ZMQMessageStorage:
             # TODO: Check on local example
             message_future.add_done_callback(done_callback)
             self.__storage[message.id] = Stored(
-                message, message_future, response_type, destination
+                message=message, future=message_future
             )
-            self.__set_condition.notify_all()
+            self.__script_queue.put(message)
+            self.__set_condition.notify()
             return message_future
 
-    def set_result(self, key: UUID, message: dict):
-        stored = self.__storage[key]
+    def set_result(self, message: ExecuteResult):
+        stored = self.__storage[message.id]
         if stored.future is None:
-            stored.future = ZMQFuture()
+            stored.future = ExecuteFuture()
             stored.future.set_exception(RepositoryException("Future was unset"))
 
-        if stored.response_type is None:
-            stored.future.set_result(ZMQMessage[BaseModel].parse_obj(message))
-            return
-
         try:
-            stored.future.set_result(
-                ZMQMessage[stored.response_type].parse_obj(message)  # type: ignore
-            )
+
+            stored.future.set_result(message)
         except ValidationError:
             stored.future.set_exception(
                 UnprocessableResponseException(
-                    message, stored.response_type, stored.destination
+                    self.__retort.dump(message)
                 )
             )
         except Exception as e:
