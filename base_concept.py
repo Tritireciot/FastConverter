@@ -97,7 +97,11 @@ class ExecutorProcess(Process):
         self.result_queue = result_queue
 
         self.logger = logging.getLogger(self.__class__.__name__)
-
+    
+    def execute_script(self, script_path: Path, input_data: dict[str, Any]) -> ExecuteResult:
+        self.script_queue.put((script_path.resolve(), input_data))
+        return self.result_queue.get()
+    
     def run(self) -> None:
         while True:
             path, input_data = self.script_queue.get()
@@ -110,34 +114,23 @@ class ExecutorProcess(Process):
                 self.logger.error(e)
 
 
-class ExecutorAdapter:
-    def __init__(self, script_queue: multiprocessing.Queue,
-                 result_queue: multiprocessing.Queue):
-        self.script_queue = script_queue
-        self.result_queue = result_queue
-
-
-    def execute_script(self, script_path: Path, input_data: dict[str, Any]) -> ExecuteResult:
-        self.script_queue.put((script_path.resolve(), input_data))
-        #return self.result_queue.get()
-
-
 def main() -> None:
     logging.basicConfig(format="%(levelname)s:%(name)s:%(process)d - %(message)s")
     script_queue = multiprocessing.Queue()
     result_queue = multiprocessing.Queue()
-    ExecutorProcess(script_queue, result_queue).start()
+    exec_process = ExecutorProcess(script_queue, result_queue)
+    exec_process.start()
 
     script_path = Path('./generate_smth.py')
-    script_path2 = Path('./generate_smth_2.py')
+    #script_path2 = Path('./generate_smth_2.py')
 
     input_data = "150"
 
-    adapter = ExecutorAdapter(script_queue, result_queue)
+    #adapter = ExecutorAdapter(script_queue, result_queue)
     t = time.time()
-    adapter.execute_script(script_path2, input_data=input_data)
+    #print(exec_process.execute_script(script_path2, input_data=input_data))
     
-    adapter.execute_script(script_path, input_data=input_data)
+    print(exec_process.execute_script(script_path, input_data=input_data))
     logging.error(time.time() - t)
     #logging.error(res)
 
